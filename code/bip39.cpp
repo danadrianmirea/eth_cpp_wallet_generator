@@ -1,0 +1,128 @@
+#include "bip39.hpp"
+#include <sodium.h>
+#include <sstream>
+#include <algorithm>
+#include <stdexcept>
+#include <cstring>
+#include <openssl/evp.h>
+#include <openssl/hmac.h>
+#include <openssl/sha.h>
+
+// Initialize the wordlist (first few words as example)
+const std::array<std::string, 2048> BIP39::wordlist = {
+    "abandon", "ability", "able", "about", "above", "absent", "absorb", "abstract", "absurd", "abuse",
+    // ... (full list would be here)
+};
+
+// Initialize the word map
+std::unordered_map<std::string, uint16_t> BIP39::wordMap = []() {
+    std::unordered_map<std::string, uint16_t> map;
+    for (size_t i = 0; i < wordlist.size(); ++i) {
+        map[wordlist[i]] = static_cast<uint16_t>(i);
+    }
+    return map;
+}();
+
+std::vector<uint8_t> BIP39::mnemonicToSeed(const std::string& mnemonic, const std::string& passphrase) {
+    if (!validateMnemonic(mnemonic)) {
+        throw std::runtime_error("Invalid mnemonic");
+    }
+
+    // Convert mnemonic to bytes
+    std::vector<uint8_t> mnemonicBytes(mnemonic.begin(), mnemonic.end());
+    
+    // Convert passphrase to bytes
+    std::vector<uint8_t> saltBytes;
+    saltBytes.reserve(8 + passphrase.size());
+    saltBytes.insert(saltBytes.end(), {'m', 'n', 'e', 'm', 'o', 'n', 'i', 'c'});
+    saltBytes.insert(saltBytes.end(), passphrase.begin(), passphrase.end());
+    
+    // Use PBKDF2 with HMAC-SHA512
+    return pbkdf2(mnemonicBytes, saltBytes, 2048, 64);
+}
+
+bool BIP39::validateMnemonic(const std::string& mnemonic) {
+    std::istringstream iss(mnemonic);
+    std::string word;
+    int wordCount = 0;
+    
+    while (iss >> word) {
+        if (wordMap.find(word) == wordMap.end()) {
+            return false;
+        }
+        wordCount++;
+    }
+    
+    if (wordCount != 12 && wordCount != 24) {
+        return false;
+    }
+    
+    try {
+        std::vector<uint8_t> entropy = mnemonicToEntropy(mnemonic);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+std::vector<uint8_t> BIP39::mnemonicToEntropy(const std::string& mnemonic) {
+    std::istringstream iss(mnemonic);
+    std::string word;
+    std::vector<uint8_t> entropy;
+    
+    while (iss >> word) {
+        auto it = wordMap.find(word);
+        if (it == wordMap.end()) {
+            throw std::runtime_error("Invalid word in mnemonic");
+        }
+        uint16_t index = it->second;
+        entropy.push_back(index >> 8);
+        entropy.push_back(index & 0xFF);
+    }
+    
+    return entropy;
+}
+
+std::string BIP39::entropyToMnemonic(const std::vector<uint8_t>& entropy) {
+    if (entropy.size() != 16 && entropy.size() != 32) {
+        throw std::runtime_error("Invalid entropy length");
+    }
+    
+    std::stringstream ss;
+    for (size_t i = 0; i < entropy.size(); i += 2) {
+        uint16_t index = (entropy[i] << 8) | entropy[i + 1];
+        // TODO: Convert index to word using wordMap
+    }
+    
+    return ss.str();
+}
+
+std::vector<uint8_t> BIP39::pbkdf2(const std::vector<uint8_t>& password,
+                                 const std::vector<uint8_t>& salt,
+                                 int iterations,
+                                 size_t keyLength) {
+    std::vector<uint8_t> key(keyLength);
+    PKCS5_PBKDF2_HMAC(
+        reinterpret_cast<const char*>(password.data()),
+        password.size(),
+        salt.data(),
+        salt.size(),
+        iterations,
+        EVP_sha512(),
+        keyLength,
+        key.data()
+    );
+    return key;
+}
+
+std::vector<uint8_t> BIP39::hmacSha512(const std::vector<uint8_t>& key,
+                                     const std::vector<uint8_t>& data) {
+    std::vector<uint8_t> hmac(64);
+    unsigned int len;
+    HMAC_CTX* ctx = HMAC_CTX_new();
+    HMAC_Init_ex(ctx, key.data(), key.size(), EVP_sha512(), nullptr);
+    HMAC_Update(ctx, data.data(), data.size());
+    HMAC_Final(ctx, hmac.data(), &len);
+    HMAC_CTX_free(ctx);
+    return hmac;
+} 
