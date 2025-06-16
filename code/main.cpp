@@ -17,7 +17,7 @@ int main() {
         std::cout << "WalletConverter initialized successfully" << std::endl << std::flush;
         
         // Example mnemonic (replace with actual input)
-        std::string mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        std::string mnemonic = "comfort toy reform zero february acid lab dream misery vital loan noodle";
         std::cout << "Using mnemonic: " << mnemonic << std::endl << std::flush;
         
         std::cout << "Converting mnemonic to address..." << std::endl << std::flush;
@@ -25,7 +25,7 @@ int main() {
         std::cout << "Ethereum Address: " << address << std::endl << std::flush;
         
         // Expected address for this mnemonic
-        std::string expected = "0x9858EfFD232B4033E47d90003D41EC34EcaEda94";
+        std::string expected = "0xc3ae875ffcdc3e76f69b5ecf5862fb60391ceb78";
         std::cout << "Expected address: " << expected << std::endl << std::flush;
         
         if (address == expected) {

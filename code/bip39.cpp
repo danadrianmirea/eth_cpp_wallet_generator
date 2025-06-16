@@ -1,4 +1,5 @@
 #include "bip39.hpp"
+#include "wordlist.hpp"
 #include <sodium.h>
 #include <sstream>
 #include <algorithm>
@@ -7,19 +8,30 @@
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
 #include <openssl/sha.h>
+#include <iostream>
 
-// Initialize the wordlist (first few words as example)
-const std::array<std::string, 2048> BIP39::wordlist = {
-    "abandon", "ability", "able", "about", "above", "absent", "absorb", "abstract", "absurd", "abuse",
-    // ... (full list would be here)
-};
+// Initialize the wordlist from wordlist.hpp
+const std::array<std::string, 2048> BIP39::wordlist = []() {
+    std::cout << "Initializing BIP39 wordlist..." << std::endl;
+    std::array<std::string, 2048> result;
+    for (size_t i = 0; i < BIP39_WORDS::WORDLIST_SIZE && i < 2048; ++i) {
+        result[i] = std::string(BIP39_WORDS::WORDLIST[i]);
+        if (i < 5) {  // Print first few words for debugging
+            std::cout << "Word " << i << ": " << result[i] << std::endl;
+        }
+    }
+    std::cout << "BIP39 wordlist initialized with " << BIP39_WORDS::WORDLIST_SIZE << " words" << std::endl;
+    return result;
+}();
 
 // Initialize the word map
 std::unordered_map<std::string, uint16_t> BIP39::wordMap = []() {
+    std::cout << "Initializing BIP39 word map..." << std::endl;
     std::unordered_map<std::string, uint16_t> map;
     for (size_t i = 0; i < wordlist.size(); ++i) {
         map[wordlist[i]] = static_cast<uint16_t>(i);
     }
+    std::cout << "BIP39 word map initialized with " << map.size() << " entries" << std::endl;
     return map;
 }();
 
@@ -42,25 +54,32 @@ std::vector<uint8_t> BIP39::mnemonicToSeed(const std::string& mnemonic, const st
 }
 
 bool BIP39::validateMnemonic(const std::string& mnemonic) {
+    std::cout << "Validating mnemonic: " << mnemonic << std::endl;
     std::istringstream iss(mnemonic);
     std::string word;
     int wordCount = 0;
     
     while (iss >> word) {
+        std::cout << "Checking word: " << word << std::endl;
         if (wordMap.find(word) == wordMap.end()) {
+            std::cout << "Word not found in wordlist: " << word << std::endl;
             return false;
         }
         wordCount++;
     }
     
+    std::cout << "Word count: " << wordCount << std::endl;
     if (wordCount != 12 && wordCount != 24) {
+        std::cout << "Invalid word count: " << wordCount << std::endl;
         return false;
     }
     
     try {
         std::vector<uint8_t> entropy = mnemonicToEntropy(mnemonic);
+        std::cout << "Mnemonic validation successful" << std::endl;
         return true;
-    } catch (...) {
+    } catch (const std::exception& e) {
+        std::cout << "Mnemonic validation failed: " << e.what() << std::endl;
         return false;
     }
 }
