@@ -35,6 +35,8 @@ struct BIP32 {
     // Convert a string representation to a key
     static Key stringToKey(const std::string& str);
 
+    static std::vector<uint8_t> getPublicKey(const std::vector<uint8_t>& privateKey);
+
 private:
     // Helper functions
     static std::vector<uint8_t> hmacSha512(const std::vector<uint8_t>& key, 

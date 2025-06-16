@@ -17,96 +17,23 @@ BIP32::Key BIP32::deriveChildKey(const Key& parent, uint32_t childNumber) {
             throw std::runtime_error("Invalid parent key");
         }
 
+        // Check if this is a hardened key
+        bool isHardened = (childNumber & 0x80000000) != 0;
+        std::cout << (isHardened ? "Deriving hardened key..." : "Deriving normal key...") << std::endl;
+
+        // Prepare data for HMAC
         std::vector<uint8_t> data;
-        if (isHardened(childNumber)) {
-            std::cout << "Deriving hardened key..." << std::endl;
-            if (!parent.isPrivate) {
-                throw std::runtime_error("Cannot derive hardened key from public key");
-            }
-            data.push_back(0);
+        if (isHardened) {
+            // For hardened keys, use 0x00 || parent private key || index
+            data.push_back(0x00);
             data.insert(data.end(), parent.key.begin(), parent.key.end());
         } else {
-            std::cout << "Deriving normal key..." << std::endl;
-            if (parent.isPrivate) {
-                std::cout << "Getting public key from private key..." << std::endl;
-                // Get public key from private key using OpenSSL
-                EC_KEY* key = EC_KEY_new_by_curve_name(NID_secp256k1);
-                if (!key) {
-                    throw std::runtime_error("Failed to create EC key");
-                }
-                std::cout << "EC key created successfully" << std::endl;
-
-                BIGNUM* priv = BN_bin2bn(parent.key.data(), parent.key.size(), nullptr);
-                if (!priv) {
-                    EC_KEY_free(key);
-                    throw std::runtime_error("Failed to create BIGNUM from private key");
-                }
-                std::cout << "BIGNUM created from private key" << std::endl;
-
-                if (!EC_KEY_set_private_key(key, priv)) {
-                    BN_free(priv);
-                    EC_KEY_free(key);
-                    throw std::runtime_error("Failed to set private key");
-                }
-                std::cout << "Private key set in EC key" << std::endl;
-
-                const EC_GROUP* group = EC_KEY_get0_group(key);
-                if (!group) {
-                    BN_free(priv);
-                    EC_KEY_free(key);
-                    throw std::runtime_error("Failed to get EC group");
-                }
-                std::cout << "Got EC group" << std::endl;
-
-                EC_POINT* pub = EC_POINT_new(group);
-                if (!pub) {
-                    BN_free(priv);
-                    EC_KEY_free(key);
-                    throw std::runtime_error("Failed to create EC point");
-                }
-                std::cout << "Created EC point" << std::endl;
-
-                if (!EC_POINT_mul(group, pub, priv, nullptr, nullptr, nullptr)) {
-                    EC_POINT_free(pub);
-                    BN_free(priv);
-                    EC_KEY_free(key);
-                    throw std::runtime_error("Failed to compute public key");
-                }
-                std::cout << "Computed public key" << std::endl;
-
-                // Serialize public key (compressed)
-                size_t pub_len = EC_POINT_point2oct(group, pub, POINT_CONVERSION_COMPRESSED, nullptr, 0, nullptr);
-                if (pub_len == 0) {
-                    EC_POINT_free(pub);
-                    BN_free(priv);
-                    EC_KEY_free(key);
-                    throw std::runtime_error("Failed to get public key length");
-                }
-                std::cout << "Got public key length: " << pub_len << std::endl;
-
-                std::vector<uint8_t> pub_key(pub_len);
-                if (!EC_POINT_point2oct(group, pub, POINT_CONVERSION_COMPRESSED, pub_key.data(), pub_len, nullptr)) {
-                    EC_POINT_free(pub);
-                    BN_free(priv);
-                    EC_KEY_free(key);
-                    throw std::runtime_error("Failed to serialize public key");
-                }
-                std::cout << "Serialized public key" << std::endl;
-
-                std::cout << "Parent public key (hex): " << utils::bytesToHex(pub_key) << std::endl;
-                data.insert(data.end(), pub_key.begin(), pub_key.end());
-
-                // Cleanup
-                EC_POINT_free(pub);
-                BN_free(priv);
-                EC_KEY_free(key);
-                std::cout << "Cleaned up OpenSSL resources" << std::endl;
-            } else {
-                data.insert(data.end(), parent.key.begin(), parent.key.end());
-            }
+            // For normal keys, use parent public key || index
+            std::vector<uint8_t> parentPubKey = getPublicKey(parent.key);
+            data.insert(data.end(), parentPubKey.begin(), parentPubKey.end());
         }
 
-        // Append child number
+        // Append the child number as a 4-byte big-endian integer
         data.push_back((childNumber >> 24) & 0xFF);
         data.push_back((childNumber >> 16) & 0xFF);
         data.push_back((childNumber >> 8) & 0xFF);
@@ -114,87 +41,150 @@ BIP32::Key BIP32::deriveChildKey(const Key& parent, uint32_t childNumber) {
 
         std::cout << "HMAC input (hex): " << utils::bytesToHex(data) << std::endl;
 
-        // Calculate HMAC-SHA512 using libsodium
-        std::vector<uint8_t> hmac(crypto_auth_hmacsha512_BYTES);
+        // Calculate HMAC-SHA512
+        std::vector<uint8_t> hmacOutput(64);
         crypto_auth_hmacsha512_state state;
         crypto_auth_hmacsha512_init(&state, parent.chainCode.data(), parent.chainCode.size());
         crypto_auth_hmacsha512_update(&state, data.data(), data.size());
-        crypto_auth_hmacsha512_final(&state, hmac.data());
-        
-        std::cout << "HMAC output (hex): " << utils::bytesToHex(hmac) << std::endl;
+        crypto_auth_hmacsha512_final(&state, hmacOutput.data());
 
-        // Split into key and chain code
-        std::vector<uint8_t> childKey(hmac.begin(), hmac.begin() + KEY_SIZE);
-        std::vector<uint8_t> childChainCode(hmac.begin() + KEY_SIZE, hmac.end());
+        std::cout << "HMAC output (hex): " << utils::bytesToHex(hmacOutput) << std::endl;
+
+        // Split HMAC output into child key and chain code
+        std::vector<uint8_t> childKey(hmacOutput.begin(), hmacOutput.begin() + KEY_SIZE);
+        std::vector<uint8_t> childChainCode(hmacOutput.begin() + KEY_SIZE, hmacOutput.end());
+
+        std::cout << "HMAC key part (hex): " << utils::bytesToHex(childKey) << std::endl;
+        std::cout << "HMAC chain code part (hex): " << utils::bytesToHex(childChainCode) << std::endl;
 
         // For private key derivation, we need to add the HMAC output to the parent private key
         if (parent.isPrivate) {
             std::cout << "Deriving private key..." << std::endl;
-            // Create a new EC key to get the group
-            EC_KEY* key = EC_KEY_new_by_curve_name(NID_secp256k1);
-            if (!key) {
-                throw std::runtime_error("Failed to create EC key for private key derivation");
-            }
-            std::cout << "Created EC key for private key derivation" << std::endl;
-
-            const EC_GROUP* group = EC_KEY_get0_group(key);
-            if (!group) {
-                EC_KEY_free(key);
-                throw std::runtime_error("Failed to get EC group for private key derivation");
-            }
-            std::cout << "Got EC group for private key derivation" << std::endl;
-
+            
             // Create BIGNUMs for the private keys
             BIGNUM* parentPriv = BN_bin2bn(parent.key.data(), parent.key.size(), nullptr);
             BIGNUM* childPriv = BN_bin2bn(childKey.data(), childKey.size(), nullptr);
             BIGNUM* n = BN_new();
-            if (!parentPriv || !childPriv || !n) {
+            BIGNUM* sum = BN_new();
+            BIGNUM* result = BN_new();
+            BIGNUM* temp = BN_new();
+            BN_CTX* ctx = BN_CTX_new();
+            
+            if (!parentPriv || !childPriv || !n || !sum || !result || !temp || !ctx) {
                 if (parentPriv) BN_free(parentPriv);
                 if (childPriv) BN_free(childPriv);
                 if (n) BN_free(n);
-                EC_KEY_free(key);
+                if (sum) BN_free(sum);
+                if (result) BN_free(result);
+                if (temp) BN_free(temp);
+                if (ctx) BN_CTX_free(ctx);
                 throw std::runtime_error("Failed to create BIGNUMs for private key derivation");
             }
             std::cout << "Created BIGNUMs for private key derivation" << std::endl;
 
-            // Get the order of the curve
-            if (!EC_GROUP_get_order(group, n, nullptr)) {
+            // Print parent private key
+            char* parent_hex = BN_bn2hex(parentPriv);
+            if (parent_hex) {
+                std::cout << "Parent private key (hex): " << parent_hex << std::endl;
+                OPENSSL_free(parent_hex);
+            }
+
+            // Print child private key
+            char* child_hex = BN_bn2hex(childPriv);
+            if (child_hex) {
+                std::cout << "Child private key (hex): " << child_hex << std::endl;
+                OPENSSL_free(child_hex);
+            }
+
+            // Set the curve order (n) directly
+            // n = FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
+            const char* n_hex = "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141";
+            if (!BN_hex2bn(&n, n_hex)) {
                 BN_free(parentPriv);
                 BN_free(childPriv);
                 BN_free(n);
-                EC_KEY_free(key);
-                throw std::runtime_error("Failed to get curve order");
+                BN_free(sum);
+                BN_free(result);
+                BN_free(temp);
+                BN_CTX_free(ctx);
+                throw std::runtime_error("Failed to set curve order");
             }
-            std::cout << "Got curve order" << std::endl;
+            std::cout << "Set curve order" << std::endl;
+
+            // Print curve order
+            char* n_hex_str = BN_bn2hex(n);
+            if (n_hex_str) {
+                std::cout << "Curve order (hex): " << n_hex_str << std::endl;
+                OPENSSL_free(n_hex_str);
+            }
 
             // Add the parent private key and child private key
-            if (!BN_add(childPriv, parentPriv, childPriv)) {
+            if (!BN_add(sum, parentPriv, childPriv)) {
                 BN_free(parentPriv);
                 BN_free(childPriv);
                 BN_free(n);
-                EC_KEY_free(key);
+                BN_free(sum);
+                BN_free(result);
+                BN_free(temp);
+                BN_CTX_free(ctx);
                 throw std::runtime_error("Failed to add private keys");
             }
             std::cout << "Added private keys" << std::endl;
 
-            // Take modulo n to ensure the result is in the valid range
-            if (!BN_mod(childPriv, childPriv, n, nullptr)) {
+            // Print sum before modulo
+            char* sum_hex = BN_bn2hex(sum);
+            if (sum_hex) {
+                std::cout << "Sum before modulo (hex): " << sum_hex << std::endl;
+                OPENSSL_free(sum_hex);
+            }
+
+            // Take modulo n using BN_CTX for better error handling
+            if (!BN_mod(result, sum, n, ctx)) {
                 BN_free(parentPriv);
                 BN_free(childPriv);
                 BN_free(n);
-                EC_KEY_free(key);
+                BN_free(sum);
+                BN_free(result);
+                BN_free(temp);
+                BN_CTX_free(ctx);
                 throw std::runtime_error("Failed to compute modulo");
             }
             std::cout << "Computed modulo" << std::endl;
 
+            // Check if result is zero
+            if (BN_is_zero(result)) {
+                std::cout << "Result is zero, incrementing index and retrying..." << std::endl;
+                // Clean up current BIGNUMs
+                BN_free(parentPriv);
+                BN_free(childPriv);
+                BN_free(n);
+                BN_free(sum);
+                BN_free(result);
+                BN_free(temp);
+                BN_CTX_free(ctx);
+                
+                // Increment the index and retry
+                return deriveChildKey(parent, childNumber + 1);
+            }
+
+            // Print result
+            char* result_hex = BN_bn2hex(result);
+            if (result_hex) {
+                std::cout << "Result (hex): " << result_hex << std::endl;
+                OPENSSL_free(result_hex);
+            }
+
             // Convert back to bytes
             std::vector<uint8_t> newChildKey(KEY_SIZE, 0);
-            int len = BN_bn2bin(childPriv, newChildKey.data());
+            int len = BN_bn2bin(result, newChildKey.data());
             if (len <= 0) {
                 BN_free(parentPriv);
                 BN_free(childPriv);
                 BN_free(n);
-                EC_KEY_free(key);
+                BN_free(sum);
+                BN_free(result);
+                BN_free(temp);
+                BN_CTX_free(ctx);
                 throw std::runtime_error("Failed to convert BIGNUM to bytes");
             }
             std::cout << "Converted BIGNUM to bytes, length: " << len << std::endl;
@@ -206,13 +196,17 @@ BIP32::Key BIP32::deriveChildKey(const Key& parent, uint32_t childNumber) {
                 std::cout << "Padded key to " << KEY_SIZE << " bytes" << std::endl;
             }
 
+            std::cout << "Final child key (hex): " << utils::bytesToHex(newChildKey) << std::endl;
             childKey = newChildKey;
 
             // Cleanup
             BN_free(parentPriv);
             BN_free(childPriv);
             BN_free(n);
-            EC_KEY_free(key);
+            BN_free(sum);
+            BN_free(result);
+            BN_free(temp);
+            BN_CTX_free(ctx);
             std::cout << "Cleaned up OpenSSL resources for private key derivation" << std::endl;
         }
 
@@ -364,4 +358,97 @@ uint32_t BIP32::getChildNumber(const std::string& pathComponent) {
     }
     
     return childNumber;
+}
+
+std::vector<uint8_t> BIP32::getPublicKey(const std::vector<uint8_t>& privateKey) {
+    std::cout << "\nGetting public key from private key..." << std::endl;
+    
+    EC_KEY* key = EC_KEY_new_by_curve_name(NID_secp256k1);
+    if (!key) {
+        throw std::runtime_error("Failed to create EC key");
+    }
+    std::cout << "EC key created successfully" << std::endl;
+
+    BIGNUM* priv = BN_new();
+    if (!priv) {
+        EC_KEY_free(key);
+        throw std::runtime_error("Failed to create BIGNUM");
+    }
+    std::cout << "BIGNUM created from private key" << std::endl;
+
+    BN_bin2bn(privateKey.data(), privateKey.size(), priv);
+    if (!EC_KEY_set_private_key(key, priv)) {
+        BN_free(priv);
+        EC_KEY_free(key);
+        throw std::runtime_error("Failed to set private key");
+    }
+    std::cout << "Private key set in EC key" << std::endl;
+
+    const EC_GROUP* group = EC_KEY_get0_group(key);
+    if (!group) {
+        BN_free(priv);
+        EC_KEY_free(key);
+        throw std::runtime_error("Failed to get EC group");
+    }
+    std::cout << "Got EC group" << std::endl;
+
+    EC_POINT* pub = EC_POINT_new(group);
+    if (!pub) {
+        BN_free(priv);
+        EC_KEY_free(key);
+        throw std::runtime_error("Failed to create EC point");
+    }
+    std::cout << "Created EC point" << std::endl;
+
+    if (!EC_POINT_mul(group, pub, priv, nullptr, nullptr, nullptr)) {
+        EC_POINT_free(pub);
+        BN_free(priv);
+        EC_KEY_free(key);
+        throw std::runtime_error("Failed to compute public key");
+    }
+    std::cout << "Computed public key" << std::endl;
+
+    // Get the point coordinates
+    BIGNUM* x = BN_new();
+    BIGNUM* y = BN_new();
+    if (!x || !y) {
+        if (x) BN_free(x);
+        if (y) BN_free(y);
+        EC_POINT_free(pub);
+        BN_free(priv);
+        EC_KEY_free(key);
+        throw std::runtime_error("Failed to create coordinate BIGNUMs");
+    }
+
+    if (!EC_POINT_get_affine_coordinates(group, pub, x, y, nullptr)) {
+        BN_free(x);
+        BN_free(y);
+        EC_POINT_free(pub);
+        BN_free(priv);
+        EC_KEY_free(key);
+        throw std::runtime_error("Failed to get point coordinates");
+    }
+
+    // Convert coordinates to bytes
+    std::vector<uint8_t> x_bytes(32);
+    std::vector<uint8_t> y_bytes(32);
+    BN_bn2bin(x, x_bytes.data());
+    BN_bn2bin(y, y_bytes.data());
+
+    // Create compressed public key
+    std::vector<uint8_t> publicKey;
+    publicKey.push_back(y_bytes[31] & 1 ? 0x03 : 0x02);  // Compressed format
+    publicKey.insert(publicKey.end(), x_bytes.begin(), x_bytes.end());
+
+    std::cout << "Public key (hex): " << utils::bytesToHex(publicKey) << std::endl;
+
+    // Cleanup
+    BN_free(x);
+    BN_free(y);
+    EC_POINT_free(pub);
+    BN_free(priv);
+    EC_KEY_free(key);
+    std::cout << "Cleaned up OpenSSL resources" << std::endl;
+
+    return publicKey;
 } 

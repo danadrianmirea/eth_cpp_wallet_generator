@@ -1,11 +1,16 @@
 #include <iostream>
 #include <string>
+#include <openssl/bn.h>
 #include "wallet_converter.hpp"
 
 int main() {
     std::cout << "Program starting..." << std::endl << std::flush;
     
     try {
+        // Initialize OpenSSL
+        std::cout << "Initializing OpenSSL..." << std::endl << std::flush;
+        // No need for OpenSSL initialization since we're only using BIGNUM functions
+        
         std::cout << "Starting wallet conversion..." << std::endl << std::flush;
         
         WalletConverter converter;
